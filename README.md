@@ -1,6 +1,4 @@
-# LLM2Rec — Implementation from Scratch
-# Based on: "LLM2Rec: Large Language Models Are Powerful Embedding Models
-#             for Sequential Recommendation" (KDD '25)
+# "LLM2Rec: Large Language Models Are Powerful Embedding Models for Sequential Recommendation" (KDD '25)
 
 ## Project structure
 ```
