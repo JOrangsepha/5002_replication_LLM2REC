@@ -4,7 +4,7 @@ run.py
 Main entry point for the full LLM2Rec pipeline.
 
 Usage:
-  python run.py --data_dir ./data --dataset Games --stage all
+  python run.py --data_dir ./data --dataset AmazonMix-6 --stage all
 
 Stages:
   1. csft   — Collaborative Supervised Fine-Tuning
@@ -19,10 +19,10 @@ import argparse
 import torch
 import pickle
 
-from data.dataset import preprocess_dataset, CSFTDataset, IEMDataset
+from data.dataset import load_dataset_for_experiment
 from trainers.csft_trainer import CSFTTrainer
 from trainers.iem_trainer import IEMTrainer
-from trainers.rec_trainer import RecDataset, RecTrainer
+from trainers.rec_trainer import RecTrainer
 from models.recommenders import GRU4Rec, SASRec
 
 
@@ -75,24 +75,19 @@ def main():
 
     # ── Step 0: Preprocessing ──────────────────────────────────────────────
     print("=" * 60)
-    print(f"Preprocessing: {args.dataset}")
-    train_seqs, val_seqs, test_seqs, item_lookup = preprocess_dataset(
-        data_path, max_len=args.max_seq_len
-    )
-    # Save metadata for later stages
-    with open(meta_path, "wb") as f:
-        pickle.dump({"train": train_seqs, "val": val_seqs,
-                     "test": test_seqs, "item_lookup": item_lookup}, f)
+    print(f"Loading dataset: {args.dataset}")
+    (csft_dataset, iem_dataset,
+    train_rec_dataset, val_rec_dataset, test_rec_dataset,
+    item_titles, item2idx) = load_dataset_for_experiment(args.data_dir, args.dataset)
 
-    # Build item index mapping (title → int index)
-    item_titles = list(item_lookup.values())
-    item2idx    = {title: i for i, title in enumerate(item_titles)}
+     # Save metadata for later stages
+    with open(meta_path, "wb") as f:
+        pickle.dump({"item_titles": item_titles, "item2idx": item2idx}, f)
 
     # ── Stage 1: CSFT ─────────────────────────────────────────────────────
     if args.stage in ("csft", "all"):
         print("\n" + "=" * 60)
         print("Stage 1: Collaborative Supervised Fine-Tuning (CSFT)")
-        csft_dataset = CSFTDataset(train_seqs)
 
         trainer = CSFTTrainer(
             model_name=args.backbone,
@@ -109,7 +104,6 @@ def main():
     if args.stage in ("iem", "all"):
         print("\n" + "=" * 60)
         print("Stage 2: Item-level Embedding Modeling (IEM)")
-        iem_dataset = IEMDataset(item_lookup)
 
         iem_trainer = IEMTrainer(
             csft_model_path=csft_ckpt,
@@ -142,9 +136,9 @@ def main():
         item_emb_table = torch.load(embed_path)
         llm_dim        = item_emb_table.shape[1]
 
-        train_dataset  = RecDataset(train_seqs, item2idx, max_len=args.max_seq_len)
-        val_dataset    = RecDataset(val_seqs,   item2idx, max_len=args.max_seq_len)
-        test_dataset   = RecDataset(test_seqs,  item2idx, max_len=args.max_seq_len)
+        train_dataset = train_rec_dataset
+        val_dataset   = val_rec_dataset
+        test_dataset  = test_rec_dataset
 
         # Average results across multiple seeds (Section 4.1.1)
         all_results = []
