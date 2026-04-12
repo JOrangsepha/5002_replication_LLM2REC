@@ -1,265 +1,133 @@
-"""
-data/dataset.py
----------------
-Handles loading and preprocessing of Amazon/Goodreads datasets.
-
-Paper reference (Section 4.1.1):
-- 5-core filtering: keep users/items with >= 5 interactions
-- Max sequence length: 10
-- Leave-one-out split: last item = test, second-to-last = val, rest = train
-- Items represented by their titles (text)
-
-Expected data format (from LLM2Rec repo ./data/):
-Each dataset is a .pkl or .json file with fields:
-  - user_id, item_id, item_title, timestamp
-"""
-
-import os
-import json
-import pickle
-from collections import defaultdict
+import os, ast, json, torch
+import pandas as pd
 from torch.utils.data import Dataset
 
+# ── Format A: CSV (Amazon train/valid/test splits) ────────────────────────────
+def load_csv_split(csv_path):
+    df = pd.read_csv(csv_path, encoding="utf-8")
+    samples = []
+    for _, row in df.iterrows():
+        history_titles = ast.literal_eval(row["history_item_title"])
+        target_title   = str(row["item_title"])
+        target_id      = int(row["item_id"])
+        if history_titles:
+            samples.append({"history": history_titles,
+                            "target_title": target_title,
+                            "target_id": target_id})
+    return samples
 
-# ── 1. Load raw data ─────────────────────────────────────────────────────────
+# ── Format B+C: TXT integer sequences + item_titles.json ─────────────────────
+def load_item_titles_json(json_path):
+    with open(json_path, encoding="utf-8") as f:
+        return json.load(f)
 
-def load_dataset(data_path: str) -> list[dict]:
-    """
-    Load a dataset file. Supports .json, .jsonl, and .pkl formats.
-    Returns a list of interaction dicts with keys:
-      user_id, item_id, item_title, timestamp
-    """
-    ext = os.path.splitext(data_path)[-1]
-    if ext == ".json":
-        with open(data_path) as f:
-            return json.load(f)
-    elif ext == ".jsonl":
-        with open(data_path) as f:
-            return [json.loads(line) for line in f]
-    elif ext == ".pkl":
-        with open(data_path, "rb") as f:
-            return pickle.load(f)
-    else:
-        raise ValueError(f"Unsupported file format: {ext}")
+def load_txt_split(txt_path, item_titles):
+    samples = []
+    with open(txt_path, encoding="utf-8") as f:
+        for line in f:
+            ids = line.strip().split()
+            if len(ids) < 2:
+                continue
+            history_titles = [item_titles.get(str(i), f"item_{i}") for i in ids[:-1]]
+            target_title   = item_titles.get(str(ids[-1]), f"item_{ids[-1]}")
+            samples.append({"history": history_titles,
+                            "target_title": target_title,
+                            "target_id": int(ids[-1])})
+    return samples
 
+# ── AmazonMix-6 item_titles.txt ("title\tindex" per line) ────────────────────
+def load_item_titles_txt(txt_path):
+    titles = {}
+    with open(txt_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if "\t" in line:
+                title, idx = line.rsplit("\t", 1)
+                titles[idx.strip()] = title.strip()
+    return titles
 
-# ── 2. Build user interaction sequences ──────────────────────────────────────
+# ── High-level loaders ────────────────────────────────────────────────────────
+def load_amazon_dataset(dataset_dir):
+    core_dir       = os.path.join(dataset_dir, "5-core")
+    downstream_dir = os.path.join(core_dir, "downstream")
 
-def build_sequences(interactions: list[dict]) -> dict[str, list]:
-    """
-    Group interactions by user, sort by timestamp, and return:
-      { user_id: [(item_id, item_title), ...] }  sorted oldest → newest
-    """
-    user_items = defaultdict(list)
-    for row in interactions:
-        user_items[row["user_id"]].append(
-            (row["timestamp"], row["item_id"], row["item_title"])
-        )
-    # Sort each user's history by timestamp
-    sequences = {}
-    for user, records in user_items.items():
-        records.sort(key=lambda x: x[0])
-        sequences[user] = [(item_id, title) for _, item_id, title in records]
-    return sequences
+    def find_csv(folder):
+        files = [f for f in os.listdir(folder) if f.endswith(".csv")]
+        return os.path.join(folder, files[0])
 
+    csft_samples  = load_csv_split(find_csv(os.path.join(core_dir, "train")))
+    item_titles   = load_item_titles_json(os.path.join(downstream_dir, "item_titles.json"))
+    train_samples = load_txt_split(os.path.join(downstream_dir, "train_data.txt"), item_titles)
+    val_samples   = load_txt_split(os.path.join(downstream_dir, "val_data.txt"),   item_titles)
+    test_samples  = load_txt_split(os.path.join(downstream_dir, "test_data.txt"),  item_titles)
+    return csft_samples, train_samples, val_samples, test_samples, item_titles
 
-# ── 3. 5-core filtering (Section 4.1.1) ──────────────────────────────────────
+def load_goodreads_dataset(dataset_dir):
+    clean_dir   = os.path.join(dataset_dir, "clean")
+    item_titles = load_item_titles_json(os.path.join(clean_dir, "item_titles.json"))
+    train_samples = load_txt_split(os.path.join(clean_dir, "train_data.txt"), item_titles)
+    val_samples   = load_txt_split(os.path.join(clean_dir, "val_data.txt"),   item_titles)
+    test_samples  = load_txt_split(os.path.join(clean_dir, "test_data.txt"),  item_titles)
+    # Goodreads has no separate CSV — train_samples used for both CSFT and rec
+    return train_samples, train_samples, val_samples, test_samples, item_titles
 
-def five_core_filter(sequences: dict, min_count: int = 5) -> dict:
-    """
-    Iteratively remove users and items with fewer than min_count interactions
-    until convergence. Paper uses 5-core.
-    """
-    while True:
-        # Count item frequencies
-        item_counts = defaultdict(int)
-        for seq in sequences.values():
-            for item_id, _ in seq:
-                item_counts[item_id] += 1
+def load_amazonmix6_dataset(dataset_dir):
+    core_dir     = os.path.join(dataset_dir, "5-core")
+    csft_samples = load_csv_split(os.path.join(core_dir, "train", "AmazonMix-6.csv"))
+    item_titles  = load_item_titles_txt(os.path.join(core_dir, "info", "item_titles.txt"))
+    return csft_samples, item_titles
 
-        # Filter items
-        valid_items = {iid for iid, cnt in item_counts.items() if cnt >= min_count}
-
-        # Rebuild sequences keeping only valid items
-        new_sequences = {}
-        for user, seq in sequences.items():
-            filtered = [(iid, title) for iid, title in seq if iid in valid_items]
-            if len(filtered) >= min_count:
-                new_sequences[user] = filtered
-
-        if len(new_sequences) == len(sequences):
-            break  # Converged
-        sequences = new_sequences
-
-    return sequences
-
-
-# ── 4. Leave-one-out split (Section 4.1.1) ───────────────────────────────────
-
-def leave_one_out_split(sequences: dict, max_len: int = 10):
-    """
-    Split each user's sequence:
-      - test  = last item
-      - val   = second-to-last item
-      - train = everything else (capped at max_len most recent)
-
-    Returns three dicts: train_seqs, val_seqs, test_seqs
-    Each entry: { user_id: {"history": [...titles...], "target_id": str, "target_title": str} }
-    """
-    train_seqs, val_seqs, test_seqs = {}, {}, {}
-
-    for user, seq in sequences.items():
-        if len(seq) < 3:
-            continue  # Need at least 3 items for a valid split
-
-        # Trim to max_len + 2 (we'll pop test and val)
-        if len(seq) > max_len + 2:
-            seq = seq[-(max_len + 2):]
-
-        test_item  = seq[-1]
-        val_item   = seq[-2]
-        train_hist = seq[:-2]
-
-        # History is represented as titles (Section 3.1)
-        history_titles = [title for _, title in train_hist]
-
-        train_seqs[user] = {
-            "history": history_titles,
-            "target_id": test_item[0],
-            "target_title": test_item[1],
-        }
-        val_seqs[user] = {
-            "history": history_titles,
-            "target_id": val_item[0],
-            "target_title": val_item[1],
-        }
-        test_seqs[user] = {
-            "history": history_titles,
-            "target_id": test_item[0],
-            "target_title": test_item[1],
-        }
-
-    return train_seqs, val_seqs, test_seqs
-
-
-# ── 5. Build item title lookup ────────────────────────────────────────────────
-
-def build_item_lookup(sequences: dict) -> dict[str, str]:
-    """Returns { item_id: item_title } for all items in the dataset."""
-    item_lookup = {}
-    for seq in sequences.values():
-        for item_id, title in seq:
-            item_lookup[item_id] = title
-    return item_lookup
-
-
-# ── 6. PyTorch Dataset classes ────────────────────────────────────────────────
-
+# ── PyTorch Dataset classes (unchanged interface, works with new loaders) ─────
 class CSFTDataset(Dataset):
-    """
-    Dataset for Stage 1: Collaborative Supervised Fine-Tuning (Section 3.2).
-
-    Each sample is (history_titles, target_title).
-    The instruction format follows Figure 3 of the paper:
-      Input:  "item1, item2, item3, ..."
-      Output: "target_item"
-    """
-
-    def __init__(self, sequences: dict):
-        self.samples = []
-        for user_data in sequences.values():
-            history = user_data["history"]
-            target  = user_data["target_title"]
-            if history:  # Skip empty histories
-                self.samples.append((history, target))
-
-    def __len__(self):
-        return len(self.samples)
-
+    def __init__(self, samples):
+        self.samples = [(s["history"], s["target_title"]) for s in samples if s["history"]]
+    def __len__(self): return len(self.samples)
     def __getitem__(self, idx):
         history, target = self.samples[idx]
-        # Format: comma-separated item titles (Section 3.2, Figure 3)
-        input_text  = ", ".join(history)
-        target_text = target
-        return {"input_text": input_text, "target_text": target_text}
-
+        return {"input_text": ", ".join(history), "target_text": target}
 
 class IEMDataset(Dataset):
-    """
-    Dataset for Stage 2: Item-level Embedding Modeling (Section 3.3).
+    def __init__(self, item_titles): self.items = item_titles
+    def __len__(self): return len(self.items)
+    def __getitem__(self, idx): return {"item_title": self.items[idx]}
 
-    Each sample is a single item title.
-    Used for both MNTP and contrastive learning.
-    """
-
-    def __init__(self, item_lookup: dict[str, str]):
-        self.items = list(item_lookup.values())
-
-    def __len__(self):
-        return len(self.items)
-
-    def __getitem__(self, idx):
-        return {"item_title": self.items[idx]}
-
-
-class RecommenderDataset(Dataset):
-    """
-    Dataset for downstream recommenders (GRU4Rec, SASRec).
-    Provides item-id sequences for training the recommender.
-    """
-
-    def __init__(self, sequences: dict, item_lookup: dict, max_len: int = 10):
-        self.samples   = []
-        self.item2id   = {iid: i for i, iid in enumerate(item_lookup.keys())}
-        self.max_len   = max_len
-
-        for user_data in sequences.values():
-            history_ids = [
-                self.item2id[iid]
-                for iid in [
-                    # Map titles back to ids via reverse lookup
-                ]
-            ]
-            target_id = self.item2id.get(user_data["target_id"], None)
-            if target_id is not None:
-                self.samples.append((history_ids, target_id))
-
-    def __len__(self):
-        return len(self.samples)
-
+class RecDataset(Dataset):
+    def __init__(self, samples, item2idx, max_len=10):
+        self.max_len = max_len
+        self.samples = []
+        for s in samples:
+            history_idx = [item2idx[t] for t in s["history"] if t in item2idx]
+            target_idx  = item2idx.get(s["target_title"])
+            if target_idx is not None and history_idx:
+                self.samples.append((history_idx, target_idx))
+    def __len__(self): return len(self.samples)
     def __getitem__(self, idx):
         history, target = self.samples[idx]
-        # Pad or truncate history to max_len
-        if len(history) < self.max_len:
-            history = [0] * (self.max_len - len(history)) + history
-        else:
+        if len(history) > self.max_len:
             history = history[-self.max_len:]
-        return {"history": history, "target": target}
+        else:
+            history = [0] * (self.max_len - len(history)) + history
+        return {"history": torch.tensor(history, dtype=torch.long),
+                "target":  torch.tensor(target,  dtype=torch.long)}
 
+# ── Top-level convenience ─────────────────────────────────────────────────────
+AMAZON_DATASETS = {"Video_Games","Arts_Crafts_and_Sewing",
+                   "Movies_and_TV","Baby_Products","Sports_and_Outdoors"}
 
-# ── 7. Full preprocessing pipeline ───────────────────────────────────────────
+def load_dataset_for_experiment(data_root, dataset_name):
+    dataset_dir = os.path.join(data_root, dataset_name)
+    if dataset_name in AMAZON_DATASETS:
+        csft_s, train_s, val_s, test_s, item_titles = load_amazon_dataset(dataset_dir)
+    elif dataset_name == "Goodreads":
+        csft_s, train_s, val_s, test_s, item_titles = load_goodreads_dataset(dataset_dir)
+    elif dataset_name == "AmazonMix-6":
+        csft_s, item_titles = load_amazonmix6_dataset(dataset_dir)
+        train_s = val_s = test_s = []
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
 
-def preprocess_dataset(data_path: str, max_len: int = 10, min_core: int = 5):
-    """
-    Full pipeline: load → build sequences → 5-core filter → split.
-    Returns: train_seqs, val_seqs, test_seqs, item_lookup
-    """
-    print(f"Loading data from {data_path}...")
-    interactions = load_dataset(data_path)
-
-    print("Building sequences...")
-    sequences = build_sequences(interactions)
-    print(f"  Users before filtering: {len(sequences)}")
-
-    print(f"Applying {min_core}-core filtering...")
-    sequences = five_core_filter(sequences, min_count=min_core)
-    print(f"  Users after filtering:  {len(sequences)}")
-
-    item_lookup = build_item_lookup(sequences)
-    print(f"  Total items: {len(item_lookup)}")
-
-    print("Splitting (leave-one-out)...")
-    train_seqs, val_seqs, test_seqs = leave_one_out_split(sequences, max_len=max_len)
-    print(f"  Train samples: {len(train_seqs)}")
-
-    return train_seqs, val_seqs, test_seqs, item_lookup
+    all_titles = list(set(item_titles.values()))
+    item2idx   = {title: i for i, title in enumerate(all_titles)}
+    return (CSFTDataset(csft_s), IEMDataset(all_titles),
+            RecDataset(train_s, item2idx), RecDataset(val_s, item2idx),
+            RecDataset(test_s, item2idx), item_titles, item2idx)
