@@ -1,24 +1,23 @@
 # "LLM2Rec: Large Language Models Are Powerful Embedding Models for Sequential Recommendation" (KDD '25)
 
-## Project structure
-```
-llm2rec/
-├── data/
-│   └── dataset.py          # Data loading for CSV, TXT, and JSON formats
-├── models/
-│   └── recommenders.py     # GRU4Rec, SASRec, EmbeddingAdapter
-├── trainers/
-│   ├── csft_trainer.py     # Stage 1: Collaborative Supervised Fine-Tuning
-│   ├── iem_trainer.py      # Stage 2: MNTP + Contrastive Learning
-│   └── rec_trainer.py      # Downstream recommender training + evaluation
-├── run.py                  # Main pipeline entry point
-└── requirements.txt
-```
+## Overview
+
+This workspace contains two standalone reproduction packages:
+
+- `repro_csft_code/repro_csft/`: Stage 1 CSFT reproduction
+- `repro_iem_code/repro_iem/`: Stage 2 IEM reproduction, split into MNTP and SimCSE
+
+Each package has its own README and runnable shell script. The top-level README is kept as a single entry point for setup, data, and the recommended reproduction flow.
 
 ## Setup
+
+Install the shared dependencies first:
+
 ```bash
 pip install -r requirements.txt
 ```
+
+If you want to use the original CSFT or IEM scripts exactly as shipped in the repro folders, run them from their package directories as described below.
 
 ## Data
 Download pre-processed datasets from the authors' official repo:
@@ -41,72 +40,61 @@ Each dataset folder contains files in one of three formats:
 - TXT  — integer ID sequences for downstream recommender (5-core/downstream/)
 - JSON — item ID to title mapping (item_titles.json)
 
-## Running
+## Reproduction Scripts
 
-### Recommended order (matches the paper's pipeline)
+### CSFT reproduction
 
-**Step 1 — CSFT pre-training on AmazonMix-6**
+The CSFT package lives in `repro_csft_code/repro_csft/`.
+
+From `repro_csft_code`:
+
 ```bash
-python run.py --data_dir ./data --dataset AmazonMix-6 --stage csft --device cuda
+bash repro_csft/run_csft_repro.sh
 ```
 
-**Step 2 — IEM (MNTP + contrastive learning)**
+Available modes:
+
 ```bash
-python run.py --data_dir ./data --dataset AmazonMix-6 --stage iem --device cuda
+bash repro_csft/run_csft_repro.sh original
+bash repro_csft/run_csft_repro.sh instruction
+bash repro_csft/run_csft_repro.sh strict
+bash repro_csft/run_csft_repro.sh strict_small
 ```
 
-**Step 3 — Generate item embeddings for each evaluation dataset**
+`strict` is the closest 1:1 reproduction mode, while `strict_small` first builds a smaller dataset for quicker local testing.
+
+### IEM reproduction
+
+The IEM package lives in `repro_iem_code/repro_iem/`.
+
+From `repro_iem_code`:
+
 ```bash
-python run.py --data_dir ./data --dataset Video_Games --stage embed --device cuda
-python run.py --data_dir ./data --dataset Arts_Crafts_and_Sewing --stage embed --device cuda
-python run.py --data_dir ./data --dataset Movies_and_TV --stage embed --device cuda
-python run.py --data_dir ./data --dataset Sports_and_Outdoors --stage embed --device cuda
-python run.py --data_dir ./data --dataset Baby_Products --stage embed --device cuda
-python run.py --data_dir ./data --dataset Goodreads --stage embed --device cuda
+bash repro_iem/run_iem_repro.sh
 ```
 
-**Step 4 — Train and evaluate downstream recommenders**
+Available modes:
+
 ```bash
-# In-domain datasets
-python run.py --data_dir ./data --dataset Video_Games --stage rec --rec_model SASRec --device cuda
-python run.py --data_dir ./data --dataset Arts_Crafts_and_Sewing --stage rec --rec_model SASRec --device cuda
-python run.py --data_dir ./data --dataset Movies_and_TV --stage rec --rec_model SASRec --device cuda
-
-# Out-of-domain datasets
-python run.py --data_dir ./data --dataset Sports_and_Outdoors --stage rec --rec_model SASRec --device cuda
-python run.py --data_dir ./data --dataset Baby_Products --stage rec --rec_model SASRec --device cuda
-python run.py --data_dir ./data --dataset Goodreads --stage rec --rec_model SASRec --device cuda
-
-# Repeat above with --rec_model GRU4Rec for full Table 3 results
+bash repro_iem/run_iem_repro.sh strict
+bash repro_iem/run_iem_repro.sh mntp
+bash repro_iem/run_iem_repro.sh simcse
 ```
 
-### Minimal run (for testing or limited compute)
-If you only want to verify the pipeline works end-to-end on one dataset:
-```bash
-python run.py --data_dir ./data --dataset Video_Games --stage all --rec_model SASRec --device cuda
-```
+`strict` runs MNTP first, prepares the checkpoint, then runs SimCSE. `mntp` and `simcse` let you run each stage separately.
 
-### CPU testing (Windows)
-When testing on CPU, use `num_workers=0` and `pin_memory=False` in
-`trainers/csft_trainer.py` to avoid Windows multiprocessing issues:
-```bash
-python run.py --data_dir ./data --dataset Video_Games --stage csft --device cpu
-```
+## Suggested Order
 
-## Available dataset names
-Use exactly these names for --dataset:
+If you want the full reproduction flow, run:
 
-| Name                  | Split type  | Used for              |
-|-----------------------|-------------|-----------------------|
-| AmazonMix-6           | In-domain   | CSFT pre-training     |
-| Video_Games           | In-domain   | Evaluation            |
-| Arts_Crafts_and_Sewing| In-domain   | Evaluation            |
-| Movies_and_TV         | In-domain   | Evaluation            |
-| Sports_and_Outdoors   | Out-of-domain | Evaluation          |
-| Baby_Products         | Out-of-domain | Evaluation          |
-| Goodreads             | Out-of-domain | Evaluation          |
+1. CSFT strict reproduction
+2. IEM strict reproduction
 
-## Key hyperparameters (from the paper, Section 4.1.3)
+If you only need one stage, run the corresponding package directly from its folder.
+
+## Key Hyperparameters
+
+The following settings are taken from the paper's Section 4.1.3 and are the most useful reference values when reproducing the experiments:
 
 | Stage          | Parameter            | Value         |
 |----------------|----------------------|---------------|
@@ -129,3 +117,8 @@ Use exactly these names for --dataset:
 | Rec            | Max epochs           | 500           |
 | Rec            | Early stop patience  | 20 epochs     |
 | Rec            | Random seeds         | 42, 123, 2024 |
+
+## Package Notes
+
+- `repro_csft_code/repro_csft/README.md` explains the CSFT templates, strict mode, and small-dataset workflow in more detail.
+- `repro_iem_code/repro_iem/README.md` explains the MNTP + SimCSE split and the `run_iem_repro.sh` modes.
