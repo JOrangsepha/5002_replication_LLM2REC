@@ -1,0 +1,11 @@
+5002/
+output/
+data/
+item_info/
+wandb/
+tea_debug.log
+*.Identifier
+__pycache__/
+seqrec/ckpt/
+
+checkpoints/
