@@ -35,12 +35,10 @@ class NormalRecData:
     def __init__(self, config: dict):
         self.config = config
 
-    def _dataset_root(self):
+    def load_data(self):
         from pathlib import Path
-        return Path('data/')
 
-    def _source_dict(self):
-        return {
+        source_dict = {
             "Goodreads": 'Goodreads/clean',
             "Games_5core": "Video_Games/5-core/downstream",
             "Movies_5core": "Movies_and_TV/5-core/downstream",
@@ -48,32 +46,32 @@ class NormalRecData:
             "Sports_5core": "Sports_and_Outdoors/5-core/downstream",
             "Baby_5core": "Baby_Products/5-core/downstream",
         }
+        self.config['source_dict'] = source_dict
 
-    def _read_data_from_file(self, domain, mode=''):
-        source_dict = self._source_dict()
-        base_path = self._dataset_root()
-        file_path = base_path / source_dict[domain] / '{}data.txt'.format(mode)
-        with file_path.open('r') as file:
-            item_seqs = [list(map(int, line.split()))[-self.config['max_seq_length']-1:] for line in file]
+        def read_data_from_file(domain, mode=''):
+            base_path = Path('data/')
+            file_path = base_path / source_dict[domain] / '{}data.txt'.format(mode)
+            with file_path.open('r') as file:
+                item_seqs = [list(map(int, line.split()))[-self.config['max_seq_length']-1:] for line in file]
 
-        if mode == '':
-            flat_list = [item for sublist in item_seqs for item in sublist]
-            import numpy as np
-            item_num = np.max(flat_list)
-            return item_seqs, item_num
-        return item_seqs
-
-    def load_data(self):
-        self.config['source_dict'] = self._source_dict()
+            if mode == '':
+                flat_list = [item for sublist in item_seqs for item in sublist]
+                import numpy as np
+                item_num = np.max(flat_list)
+                return item_seqs, item_num
+            else:
+                return item_seqs
 
         train_data = []
         valid_data = []
         test_data = []
 
-        _, total_item_num = self._read_data_from_file(self.config['dataset'])
-        tmp_train_item_seqs = self._read_data_from_file(self.config['dataset'], mode='train_')
-        tmp_valid_item_seqs = self._read_data_from_file(self.config['dataset'], mode='val_')
-        tmp_test_item_seqs = self._read_data_from_file(self.config['dataset'], mode='test_')
+        tmp_item_seqs, total_item_num = read_data_from_file(self.config['dataset'])
+        tmp_train_item_seqs, tmp_valid_item_seqs, tmp_test_item_seqs = (
+            read_data_from_file(self.config['dataset'], mode='train_'),
+            read_data_from_file(self.config['dataset'], mode='val_'),
+            read_data_from_file(self.config['dataset'], mode='test_')
+            )
         train_data.extend(tmp_train_item_seqs)
         valid_data.extend(tmp_valid_item_seqs)
         test_data.extend(tmp_test_item_seqs)
