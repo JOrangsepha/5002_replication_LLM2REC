@@ -27,6 +27,13 @@ class BaseTrainer(object):
 
         self.checkpoints_deque = []
 
+    def _save_best(self):
+        if self.config['use_ddp']:
+            unwrapped_model = self.accelerator.unwrap_model(self.model)
+            torch.save(unwrapped_model.state_dict(), self.saved_model_ckpt)
+        else:
+            torch.save(self.model.state_dict(), self.saved_model_ckpt)
+
     def train(self, train_dataloader, val_dataloader):
         optimizer = AdamW(
             self.model.parameters(),
@@ -34,12 +41,6 @@ class BaseTrainer(object):
             weight_decay=self.config['weight_decay'],
         )
         total_n_steps = get_total_steps(self.config, train_dataloader)
-        # scheduler = get_scheduler(
-        #     name="cosine",
-        #     optimizer=optimizer,
-        #     num_warmup_steps=self.config['warmup_steps'],
-        #     num_training_steps=total_n_steps,
-        # )
         self.model, optimizer, train_dataloader, val_dataloader = self.accelerator.prepare(
             self.model, optimizer, train_dataloader, val_dataloader)
         self.config.pop('accelerator')
@@ -51,7 +52,6 @@ class BaseTrainer(object):
         best_epoch = 0
         best_val_score = -1
         for epoch in range(n_epochs):
-            # Training
             self.model.train()
             total_loss = 0.0
             train_progress_bar = tqdm(
@@ -65,12 +65,10 @@ class BaseTrainer(object):
                 loss = outputs['loss']
                 self.accelerator.backward(loss)
                 optimizer.step()
-                # scheduler.step()
                 total_loss = total_loss + loss.item()
 
             self.accelerator.log({"Loss/train_loss": total_loss / len(train_dataloader)}, step=epoch + 1)
 
-            # Evaluation
             if (epoch + 1) % self.config['eval_interval'] == 0:
                 all_results = self.evaluate(val_dataloader, split='val')
                 if self.accelerator.is_main_process:
@@ -83,11 +81,7 @@ class BaseTrainer(object):
                     best_val_score = val_score
                     best_epoch = epoch + 1
                     if self.accelerator.is_main_process:
-                        if self.config['use_ddp']:  # unwrap model for saving
-                            unwrapped_model = self.accelerator.unwrap_model(self.model)
-                            torch.save(unwrapped_model.state_dict(), self.saved_model_ckpt)
-                        else:
-                            torch.save(self.model.state_dict(), self.saved_model_ckpt)
+                        self._save_best()
                         print(f'[Epoch {epoch + 1}] Saved model checkpoint to {self.saved_model_ckpt}')
                 else:
                     print('Patience for {} Times'.format(epoch + 1 - best_epoch))
