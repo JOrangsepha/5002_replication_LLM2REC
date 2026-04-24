@@ -1,4 +1,4 @@
-# LLM2Rec Reproduction Project (Group 2)
+# LLM2Rec Implementation Project (Group 2)
 
 ## Project Overview
 
