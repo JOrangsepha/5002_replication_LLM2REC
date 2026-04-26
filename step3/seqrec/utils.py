@@ -53,18 +53,27 @@ def get_command_line_args_str() -> str:
 
 
 def get_model(model_name: Union[str, AbstractModel]) -> AbstractModel:
+    """
+    Retrieve the model class based on the provided model name.
+
+    Args:
+        model_name (Union[str, AbstractModel]): The name or instance of the model.
+
+    Returns:
+        AbstractModel: The model class corresponding to the provided model name.
+
+    Raises:
+        ValueError: If the model name is not found.
+    """
     if isinstance(model_name, AbstractModel):
         return model_name
 
-    model_module = importlib.import_module('seqrec.models')
-    registry = getattr(model_module, 'MODEL_REGISTRY', {})
     try:
-        return registry[model_name]
-    except KeyError:
-        try:
-            return getattr(model_module, model_name)
-        except AttributeError as exc:
-            raise ValueError(f'Model "{model_name}" not found.') from exc
+        model_class = getattr(importlib.import_module('seqrec.models'), model_name)
+    except AttributeError:
+        raise ValueError(f'Model "{model_name}" not found.')
+
+    return model_class
 
 def get_mapper(model_name: str):
     """
